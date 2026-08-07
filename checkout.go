@@ -206,8 +206,25 @@ func (c *Client) Checkout(ctx context.Context, request CheckoutRequest) (Session
 // idempotencyKey hashes the request so an identical retry reuses the session
 // Stripe already opened. Adding a field to CheckoutRequest changes every key,
 // which costs one duplicated session per in-flight retry across a deploy.
+//
+// The request is normalised the same way Checkout normalises it before sending,
+// so two requests that produce the same session hash the same. Without that,
+// Quantity 0 and Quantity 1 — which mean the same thing — would open two.
 func (r CheckoutRequest) idempotencyKey() string {
-	encoded, err := json.Marshal(r)
+	normalised := r
+	normalised.Currency = strings.ToLower(strings.TrimSpace(r.Currency))
+	if normalised.Mode == "" {
+		normalised.Mode = ModePayment
+	}
+	normalised.Lines = make([]Line, len(r.Lines))
+	copy(normalised.Lines, r.Lines)
+	for index := range normalised.Lines {
+		if normalised.Lines[index].Quantity == 0 {
+			normalised.Lines[index].Quantity = 1
+		}
+	}
+
+	encoded, err := json.Marshal(normalised)
 	if err != nil {
 		return ""
 	}

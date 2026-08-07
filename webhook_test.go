@@ -500,3 +500,60 @@ func TestMemoryStoreClaimsOnce(t *testing.T) {
 		t.Fatalf("Begin after Done = %v, %v; want false, nil", afterDone, err)
 	}
 }
+
+// Stripe sends related objects as bare id strings unless you expand them, so
+// the production payload looks nothing like an expanded fixture. This is the
+// shape that actually arrives on the endpoint.
+func TestWebhookReadsUnexpandedStripeIDs(t *testing.T) {
+	client := webhookClient(t)
+	var paid Payment
+	var refunded Refund
+	var subscription Subscription
+
+	handler, err := client.Webhook(Hooks{
+		Store:          NewMemoryStore(),
+		OnPaid:         func(_ context.Context, p Payment) error { paid = p; return nil },
+		OnRefunded:     func(_ context.Context, r Refund) error { refunded = r; return nil },
+		OnSubscription: func(_ context.Context, s Subscription) error { subscription = s; return nil },
+	})
+	if err != nil {
+		t.Fatalf("Webhook: %v", err)
+	}
+
+	session := map[string]any{
+		"id": "cs_test_1", "object": "checkout.session", "client_reference_id": "ORD-42",
+		"payment_status": "paid", "amount_total": 7000, "currency": "eur", "mode": "payment",
+		"payment_intent": "pi_test_1",
+		"customer":       "cus_test_1",
+		"subscription":   "sub_test_1",
+	}
+	if response := deliver(t, handler, eventBody(t, "evt_flat_paid", "checkout.session.completed", session), time.Now()); response.Code != http.StatusOK {
+		t.Fatalf("status %d, body %q", response.Code, response.Body.String())
+	}
+	if paid.PaymentIntentID != "pi_test_1" || paid.CustomerID != "cus_test_1" || paid.SubscriptionID != "sub_test_1" {
+		t.Errorf("unexpanded ids lost: %+v", paid)
+	}
+
+	charge := map[string]any{
+		"id": "ch_test_1", "object": "charge", "amount_refunded": 2500, "currency": "eur",
+		"payment_intent": "pi_test_1",
+		"metadata":       map[string]string{ReferenceKey: "ORD-42"},
+	}
+	if response := deliver(t, handler, eventBody(t, "evt_flat_refund", "charge.refunded", charge), time.Now()); response.Code != http.StatusOK {
+		t.Fatalf("status %d", response.Code)
+	}
+	if refunded.PaymentIntentID != "pi_test_1" {
+		t.Errorf("unexpanded payment intent lost on refund: %+v", refunded)
+	}
+
+	subscriptionObject := map[string]any{
+		"id": "sub_test_1", "object": "subscription", "status": "active",
+		"customer": "cus_test_1",
+	}
+	if response := deliver(t, handler, eventBody(t, "evt_flat_sub", "customer.subscription.created", subscriptionObject), time.Now()); response.Code != http.StatusOK {
+		t.Fatalf("status %d", response.Code)
+	}
+	if subscription.CustomerID != "cus_test_1" {
+		t.Errorf("unexpanded customer lost on subscription: %+v", subscription)
+	}
+}

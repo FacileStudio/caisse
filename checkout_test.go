@@ -233,3 +233,21 @@ func TestNewValidatesKeys(t *testing.T) {
 		t.Error("a sk_live_ key did not report Live()")
 	}
 }
+
+// Two requests that produce the same Stripe session must hash the same, or a
+// retry that spells the defaults differently opens a second checkout.
+func TestIdempotencyKeyIgnoresEquivalentSpellings(t *testing.T) {
+	explicit := validCheckout()
+	explicit.Mode = ModePayment
+	explicit.Currency = "eur"
+	explicit.Lines[0].Quantity = 1
+
+	implicit := validCheckout()
+	implicit.Mode = ""
+	implicit.Currency = "EUR"
+	implicit.Lines[0].Quantity = 0
+
+	if explicit.idempotencyKey() != implicit.idempotencyKey() {
+		t.Error("the same effective request hashed to two keys, so a retry would open a second session")
+	}
+}

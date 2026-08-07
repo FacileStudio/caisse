@@ -43,6 +43,10 @@ type RefundRequest struct {
 // EventID, OccurredAt and Livemode are only set on the webhook path. ID is only
 // set on the API path: a charge.refunded event describes the charge, not the
 // individual refund.
+//
+// Status follows the same split — the refund's own status from [Client.Refund],
+// the charge's from a webhook. Amount is always what was refunded, which on the
+// webhook path is the charge's running total rather than this refund alone.
 type Refund struct {
 	EventID         string
 	ID              string

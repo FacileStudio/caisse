@@ -4,6 +4,28 @@ All notable changes to `caisse` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow semver —
 while on `v0`, a breaking change bumps the minor.
 
+## [0.1.1] — 2026-08-07
+
+### Fixed
+
+- The checkout idempotency key now normalises the request the same way `Checkout` does before
+  sending it. `Quantity: 0` and `Quantity: 1` mean the same thing, as do `Mode: ""` and
+  `ModePayment`, and `"EUR"` and `"eur"` — but each pair hashed differently, so a retry that
+  spelled a default the other way opened a second checkout session instead of reusing the first.
+
+### Added
+
+- A webhook test against **unexpanded** Stripe payloads. Stripe sends related objects as bare
+  id strings unless you ask it to expand them, so `"customer": "cus_123"` is what actually
+  arrives on the endpoint — every fixture until now used the expanded object form, and nothing
+  proved the id survived. It does; now it is checked.
+
+### Documented
+
+- `Refund.Status` and `Refund.Amount` mean different things on the API and webhook paths: the
+  refund's own status versus the charge's, and this refund versus the charge's running refunded
+  total.
+
 ## [0.1.0] — 2026-08-07
 
 First release. `caisse` is the suite's Stripe adapter: `Checkout`, `Refund`, `PortalURL` and
