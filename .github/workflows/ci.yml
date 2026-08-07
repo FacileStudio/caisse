@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Pinned to 1.24, the oldest Go the suite still runs, and the floor go.mod
+  # documents. Building only on a newer toolchain is how a 1.25-only construct
+  # reaches a consumer that is still on the floor without anyone noticing.
+  check:
+    runs-on: ubuntu-latest
+
+    # The pg tests are the only place the dedupe SQL is exercised. Without a
+    # real PostgreSQL they skip themselves, silently and with a passing exit
+    # code, so CI provides one rather than trusting the ledger untested.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: caisse
+          POSTGRES_PASSWORD: caisse
+          POSTGRES_DB: caisse_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      CAISSE_TEST_DATABASE_URL: postgres://caisse:caisse@localhost:5432/caisse_test?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - run: gofmt -l . | tee /dev/stderr | (! read)
+      - run: go vet ./...
+      - run: go test -race -coverprofile=coverage.out ./...
+      - uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
