@@ -3,7 +3,7 @@ module github.com/FacileStudio/caisse
 go 1.24.0
 
 require (
-	github.com/FacileStudio/tronc v0.9.0
+	github.com/FacileStudio/tronc v0.10.1
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/stripe/stripe-go/v86 v86.2.0
 )
