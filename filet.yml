@@ -1,0 +1,8 @@
+# caisse: shared Stripe adapter for the Facile Suite.
+ignore: [.git, node_modules, vendor, dist, build, target, testdata, .output, _app, coverage]
+extensions: [.go]
+
+disabled:
+  - gen.line.long   # gofmt owns line width
+
+failOn: error

@@ -1,0 +1,33 @@
+name: filet
+
+# The style gate, kept in its own workflow so a fork can drop it into an
+# existing ci.yml as a single job, or delete it as a single file. The rules it
+# enforces live in filet.yml at the repository root, not here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  filet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: FacileStudio/filet@v0.3.0
+        with:
+          version: v0.3.0
+          fail-on: error
+          # The run is always reported and the provider decides what deserves an
+          # alert, so that policy lives in one place instead of in every fork's
+          # workflow. Antenne delivers a failure on the default branch and stays
+          # quiet otherwise.
+          #
+          # The URL is withheld when the secret is not available: a pull request
+          # from a fork gets no secrets, and signing with an empty key would fail
+          # on another repository's configuration rather than on this code.
+          antenne-url: ${{ secrets.ANTENNE_FILET_SECRET != '' && 'https://antenne.facile.studio/webhook/filet' || '' }}
+          antenne-secret: ${{ secrets.ANTENNE_FILET_SECRET }}
