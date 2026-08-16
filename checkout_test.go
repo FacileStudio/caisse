@@ -4,54 +4,25 @@ import (
 	"context"
 	stderrors "errors"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/FacileStudio/tronc/errors"
 )
 
-type stripeCall struct {
-	path   string
-	form   url.Values
-	header http.Header
-}
-
-// fakeStripe stands in for the Stripe API so a test can assert what was sent on
-// the wire, which is the only place the form encoding is observable.
-func fakeStripe(t *testing.T, status int, body string) (*Client, *[]stripeCall) {
-	t.Helper()
-	calls := make([]stripeCall, 0, 2)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			t.Errorf("stripe request body is not a form: %v", err)
-		}
-		calls = append(calls, stripeCall{path: r.URL.Path, form: r.PostForm, header: r.Header.Clone()})
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		if _, err := w.Write([]byte(body)); err != nil {
-			t.Errorf("write fake stripe response: %v", err)
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	client, err := New(Config{SecretKey: "sk_test_123", BaseURL: server.URL})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	return client, &calls
-}
-
-func validCheckout() CheckoutRequest {
-	return CheckoutRequest{
-		Reference:  "ORD-1",
-		Currency:   "eur",
-		Lines:      []Line{{Label: "T-shirt", Amount: 3500, Quantity: 2}},
-		SuccessURL: "https://shop.test/ok",
-		CancelURL:  "https://shop.test/ko",
-	}
+// checkoutWireForm is the exact form encoding a valid checkout must produce.
+var checkoutWireForm = map[string]string{
+	"client_reference_id":                    "ORD-1",
+	"mode":                                   "payment",
+	"success_url":                            "https://shop.test/ok",
+	"cancel_url":                             "https://shop.test/ko",
+	"customer_email":                         "buyer@shop.test",
+	"line_items[0][price_data][currency]":    "eur",
+	"line_items[0][price_data][unit_amount]": "3500",
+	"line_items[0][price_data][product_data][name]": "T-shirt",
+	"line_items[0][quantity]":                       "2",
+	"metadata[" + ReferenceKey + "]":                "ORD-1",
+	"metadata[campaign]":                            "spring",
 }
 
 func TestCheckoutSendsWhatStripeExpects(t *testing.T) {
@@ -77,24 +48,7 @@ func TestCheckoutSendsWhatStripeExpects(t *testing.T) {
 	if call.path != "/v1/checkout/sessions" {
 		t.Errorf("posted to %s", call.path)
 	}
-	want := map[string]string{
-		"client_reference_id":                    "ORD-1",
-		"mode":                                   "payment",
-		"success_url":                            "https://shop.test/ok",
-		"cancel_url":                             "https://shop.test/ko",
-		"customer_email":                         "buyer@shop.test",
-		"line_items[0][price_data][currency]":    "eur",
-		"line_items[0][price_data][unit_amount]": "3500",
-		"line_items[0][price_data][product_data][name]": "T-shirt",
-		"line_items[0][quantity]":                       "2",
-		"metadata[" + ReferenceKey + "]":                "ORD-1",
-		"metadata[campaign]":                            "spring",
-	}
-	for key, value := range want {
-		if got := call.form.Get(key); got != value {
-			t.Errorf("form[%s] = %q, want %q", key, got, value)
-		}
-	}
+	assertForm(t, call, checkoutWireForm)
 
 	if call.header.Get("Idempotency-Key") == "" {
 		t.Error("no Idempotency-Key header")
@@ -136,32 +90,32 @@ func TestCheckoutSubscriptionCopiesTheReferenceOntoTheSubscription(t *testing.T)
 	}
 }
 
-func TestCheckoutRejectsBadRequests(t *testing.T) {
-	cases := map[string]func(*CheckoutRequest){
-		"no reference":          func(r *CheckoutRequest) { r.Reference = "" },
-		"no lines":              func(r *CheckoutRequest) { r.Lines = nil },
-		"no label":              func(r *CheckoutRequest) { r.Lines[0].Label = "" },
-		"zero amount":           func(r *CheckoutRequest) { r.Lines[0].Amount = 0 },
-		"negative amount":       func(r *CheckoutRequest) { r.Lines[0].Amount = -1 },
-		"negative quantity":     func(r *CheckoutRequest) { r.Lines[0].Quantity = -1 },
-		"price and amount":      func(r *CheckoutRequest) { r.Lines[0].PriceID = "price_1" },
-		"no currency":           func(r *CheckoutRequest) { r.Currency = "" },
-		"short currency":        func(r *CheckoutRequest) { r.Currency = "eu" },
-		"relative success url":  func(r *CheckoutRequest) { r.SuccessURL = "/ok" },
-		"schemeless cancel url": func(r *CheckoutRequest) { r.CancelURL = "shop.test/ko" },
-		"ftp success url":       func(r *CheckoutRequest) { r.SuccessURL = "ftp://shop.test/ok" },
-		"no success url":        func(r *CheckoutRequest) { r.SuccessURL = "" },
-		"unknown mode":          func(r *CheckoutRequest) { r.Mode = "donation" },
-		"customer id and email": func(r *CheckoutRequest) { r.CustomerID = "cus_1"; r.CustomerEmail = "a@b.test" },
-		"long reference":        func(r *CheckoutRequest) { r.Reference = strings.Repeat("x", maxReference+1) },
-		"reserved metadata":     func(r *CheckoutRequest) { r.Metadata = map[string]string{ReferenceKey: "x"} },
-		"long metadata key":     func(r *CheckoutRequest) { r.Metadata = map[string]string{strings.Repeat("k", 41): "v"} },
-		"long metadata value":   func(r *CheckoutRequest) { r.Metadata = map[string]string{"k": strings.Repeat("v", 501)} },
-		"subscription ad hoc":   func(r *CheckoutRequest) { r.Mode = ModeSubscription },
-	}
+var badCheckouts = map[string]func(*CheckoutRequest){
+	"no reference":          func(r *CheckoutRequest) { r.Reference = "" },
+	"no lines":              func(r *CheckoutRequest) { r.Lines = nil },
+	"no label":              func(r *CheckoutRequest) { r.Lines[0].Label = "" },
+	"zero amount":           func(r *CheckoutRequest) { r.Lines[0].Amount = 0 },
+	"negative amount":       func(r *CheckoutRequest) { r.Lines[0].Amount = -1 },
+	"negative quantity":     func(r *CheckoutRequest) { r.Lines[0].Quantity = -1 },
+	"price and amount":      func(r *CheckoutRequest) { r.Lines[0].PriceID = "price_1" },
+	"no currency":           func(r *CheckoutRequest) { r.Currency = "" },
+	"short currency":        func(r *CheckoutRequest) { r.Currency = "eu" },
+	"relative success url":  func(r *CheckoutRequest) { r.SuccessURL = "/ok" },
+	"schemeless cancel url": func(r *CheckoutRequest) { r.CancelURL = "shop.test/ko" },
+	"ftp success url":       func(r *CheckoutRequest) { r.SuccessURL = "ftp://shop.test/ok" },
+	"no success url":        func(r *CheckoutRequest) { r.SuccessURL = "" },
+	"unknown mode":          func(r *CheckoutRequest) { r.Mode = "donation" },
+	"customer id and email": func(r *CheckoutRequest) { r.CustomerID = "cus_1"; r.CustomerEmail = "a@b.test" },
+	"long reference":        func(r *CheckoutRequest) { r.Reference = strings.Repeat("x", maxReference+1) },
+	"reserved metadata":     func(r *CheckoutRequest) { r.Metadata = map[string]string{ReferenceKey: "x"} },
+	"long metadata key":     func(r *CheckoutRequest) { r.Metadata = map[string]string{strings.Repeat("k", 41): "v"} },
+	"long metadata value":   func(r *CheckoutRequest) { r.Metadata = map[string]string{"k": strings.Repeat("v", 501)} },
+	"subscription ad hoc":   func(r *CheckoutRequest) { r.Mode = ModeSubscription },
+}
 
+func TestCheckoutRejectsBadRequests(t *testing.T) {
 	client, calls := fakeStripe(t, http.StatusOK, `{"id":"cs_1"}`)
-	for name, mutate := range cases {
+	for name, mutate := range badCheckouts {
 		request := validCheckout()
 		mutate(&request)
 		_, err := client.Checkout(context.Background(), request)
@@ -249,5 +203,16 @@ func TestIdempotencyKeyIgnoresEquivalentSpellings(t *testing.T) {
 
 	if explicit.idempotencyKey() != implicit.idempotencyKey() {
 		t.Error("the same effective request hashed to two keys, so a retry would open a second session")
+	}
+}
+
+// assertForm checks that the form Stripe received carries every expected key
+// with its exact value.
+func assertForm(t *testing.T, call stripeCall, want map[string]string) {
+	t.Helper()
+	for key, value := range want {
+		if got := call.form.Get(key); got != value {
+			t.Errorf("form[%s] = %q, want %q", key, got, value)
+		}
 	}
 }

@@ -94,33 +94,47 @@ type Client struct {
 // would only say so at the first API call, in production.
 func New(cfg Config) (*Client, error) {
 	key := strings.TrimSpace(cfg.SecretKey)
-	switch {
-	case key == "":
-		return nil, fmt.Errorf("caisse: SecretKey is required")
-	case strings.HasPrefix(key, "pk_"):
-		return nil, fmt.Errorf("caisse: SecretKey is a publishable key, not a secret key")
-	case !strings.HasPrefix(key, "sk_") && !strings.HasPrefix(key, "rk_"):
-		return nil, fmt.Errorf("caisse: SecretKey is not a Stripe secret key (want sk_… or rk_…)")
+	if err := validateSecretKey(key); err != nil {
+		return nil, err
 	}
 
 	secret := strings.TrimSpace(cfg.WebhookSecret)
+	if err := validateWebhookSecret(secret); err != nil {
+		return nil, err
+	}
+
+	return &Client{
+		api:            stripe.NewClient(key, stripe.WithBackends(stripe.NewBackendsWithConfig(newBackend(cfg)))),
+		webhookSecret:  secret,
+		tolerance:      resolve(cfg.Tolerance, DefaultTolerance),
+		handlerTimeout: resolve(cfg.HandlerTimeout, DefaultHandlerTimeout),
+		logger:         defaultLogger(cfg.Logger),
+		live:           strings.HasPrefix(key, "sk_live_") || strings.HasPrefix(key, "rk_live_"),
+	}, nil
+}
+
+func validateSecretKey(key string) error {
+	switch {
+	case key == "":
+		return fmt.Errorf("caisse: SecretKey is required")
+	case strings.HasPrefix(key, "pk_"):
+		return fmt.Errorf("caisse: SecretKey is a publishable key, not a secret key")
+	case !strings.HasPrefix(key, "sk_") && !strings.HasPrefix(key, "rk_"):
+		return fmt.Errorf("caisse: SecretKey is not a Stripe secret key (want sk_… or rk_…)")
+	}
+	return nil
+}
+
+func validateWebhookSecret(secret string) error {
 	if secret != "" && !strings.HasPrefix(secret, "whsec_") {
-		return nil, fmt.Errorf("caisse: WebhookSecret is not a Stripe signing secret (want whsec_…)")
+		return fmt.Errorf("caisse: WebhookSecret is not a Stripe signing secret (want whsec_…)")
 	}
+	return nil
+}
 
-	tolerance := cfg.Tolerance
-	if tolerance <= 0 {
-		tolerance = DefaultTolerance
-	}
-	handlerTimeout := cfg.HandlerTimeout
-	if handlerTimeout <= 0 {
-		handlerTimeout = DefaultHandlerTimeout
-	}
-	logger := cfg.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
+// newBackend applies the HTTPClient and BaseURL overrides to the Stripe
+// backend, when either is configured.
+func newBackend(cfg Config) *stripe.BackendConfig {
 	backendConfig := &stripe.BackendConfig{}
 	if cfg.HTTPClient != nil {
 		backendConfig.HTTPClient = cfg.HTTPClient
@@ -128,15 +142,21 @@ func New(cfg Config) (*Client, error) {
 	if cfg.BaseURL != "" {
 		backendConfig.URL = stripe.String(strings.TrimSuffix(cfg.BaseURL, "/"))
 	}
+	return backendConfig
+}
 
-	return &Client{
-		api:            stripe.NewClient(key, stripe.WithBackends(stripe.NewBackendsWithConfig(backendConfig))),
-		webhookSecret:  secret,
-		tolerance:      tolerance,
-		handlerTimeout: handlerTimeout,
-		logger:         logger,
-		live:           strings.HasPrefix(key, "sk_live_") || strings.HasPrefix(key, "rk_live_"),
-	}, nil
+func resolve(value, fallback time.Duration) time.Duration {
+	if value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func defaultLogger(logger *slog.Logger) *slog.Logger {
+	if logger == nil {
+		return slog.Default()
+	}
+	return logger
 }
 
 // FromEnv builds a client from STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET.

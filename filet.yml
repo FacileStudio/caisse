@@ -5,4 +5,7 @@ extensions: [.go]
 disabled:
   - gen.line.long   # gofmt owns line width
 
+limits:
+  structFields: 13   # Payment mirrors Stripe's wire shape; splitting it would break the public API
+
 failOn: error

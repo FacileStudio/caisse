@@ -111,39 +111,39 @@ func TestPortalURLRejectsBadInput(t *testing.T) {
 
 // Card declines are written for the cardholder and go out as-is. Everything
 // else can name internal identifiers and must not reach a client response.
-func TestWrapKeepsStripeInternalsOutOfClientResponses(t *testing.T) {
-	cases := map[string]struct {
-		err         error
-		wantCode    string
-		wantMessage string
-	}{
-		"card declined": {
-			&stripe.Error{Type: stripe.ErrorTypeCard, Msg: "Your card was declined.", HTTPStatusCode: 402},
-			"invalid_argument", "Your card was declined.",
-		},
-		"bad parameter": {
-			&stripe.Error{Type: stripe.ErrorTypeInvalidRequest, Msg: "No such price: 'price_secret'", HTTPStatusCode: 400},
-			"internal", "payment request rejected",
-		},
-		"bad api key": {
-			&stripe.Error{Type: stripe.ErrorTypeInvalidRequest, Msg: "Invalid API Key provided: sk_live_****", HTTPStatusCode: 401},
-			"internal", "payment request rejected",
-		},
-		"rate limited": {
-			&stripe.Error{Type: stripe.ErrorTypeInvalidRequest, Msg: "Too many requests", HTTPStatusCode: 429},
-			"rate_limited", "payment provider is rate limiting",
-		},
-		"stripe is down": {
-			&stripe.Error{Type: stripe.ErrorTypeAPI, Msg: "internal", HTTPStatusCode: 503},
-			"unavailable", "payment provider unavailable",
-		},
-		"network failure": {
-			stderrors.New("dial tcp: i/o timeout"),
-			"unavailable", "payment provider unreachable",
-		},
-	}
+var wrapCases = map[string]struct {
+	err         error
+	wantCode    string
+	wantMessage string
+}{
+	"card declined": {
+		&stripe.Error{Type: stripe.ErrorTypeCard, Msg: "Your card was declined.", HTTPStatusCode: 402},
+		"invalid_argument", "Your card was declined.",
+	},
+	"bad parameter": {
+		&stripe.Error{Type: stripe.ErrorTypeInvalidRequest, Msg: "No such price: 'price_secret'", HTTPStatusCode: 400},
+		"internal", "payment request rejected",
+	},
+	"bad api key": {
+		&stripe.Error{Type: stripe.ErrorTypeInvalidRequest, Msg: "Invalid API Key provided: sk_live_****", HTTPStatusCode: 401},
+		"internal", "payment request rejected",
+	},
+	"rate limited": {
+		&stripe.Error{Type: stripe.ErrorTypeInvalidRequest, Msg: "Too many requests", HTTPStatusCode: 429},
+		"rate_limited", "payment provider is rate limiting",
+	},
+	"stripe is down": {
+		&stripe.Error{Type: stripe.ErrorTypeAPI, Msg: "internal", HTTPStatusCode: 503},
+		"unavailable", "payment provider unavailable",
+	},
+	"network failure": {
+		stderrors.New("dial tcp: i/o timeout"),
+		"unavailable", "payment provider unreachable",
+	},
+}
 
-	for name, testCase := range cases {
+func TestWrapKeepsStripeInternalsOutOfClientResponses(t *testing.T) {
+	for name, testCase := range wrapCases {
 		wrapped := wrap("open checkout", testCase.err)
 		var appErr *errors.Error
 		if !stderrors.As(wrapped, &appErr) {

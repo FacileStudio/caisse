@@ -71,24 +71,32 @@ func (c *Client) Refund(ctx context.Context, request RefundRequest) (Refund, err
 		return Refund{}, err
 	}
 
+	params := refundParams(request)
+	params.Context = ctx
+	params.IdempotencyKey = stripe.String(request.idempotencyKey())
+
+	refund, err := c.api.V1Refunds.Create(ctx, params)
+	if err != nil {
+		return Refund{}, wrap("refund", err)
+	}
+	return refundResult(request, refund), nil
+}
+
+func refundParams(request RefundRequest) *stripe.RefundCreateParams {
 	params := &stripe.RefundCreateParams{
 		PaymentIntent: stripe.String(request.PaymentIntentID),
 		Metadata:      request.Metadata,
 	}
-	params.Context = ctx
-	params.IdempotencyKey = stripe.String(request.idempotencyKey())
 	if request.Amount > 0 {
 		params.Amount = stripe.Int64(request.Amount)
 	}
 	if request.Reason != "" {
 		params.Reason = stripe.String(request.Reason)
 	}
+	return params
+}
 
-	refund, err := c.api.V1Refunds.Create(ctx, params)
-	if err != nil {
-		return Refund{}, wrap("refund", err)
-	}
-
+func refundResult(request RefundRequest, refund *stripe.Refund) Refund {
 	result := Refund{
 		ID:              refund.ID,
 		PaymentIntentID: request.PaymentIntentID,
@@ -101,7 +109,7 @@ func (c *Client) Refund(ctx context.Context, request RefundRequest) (Refund, err
 	if refund.Charge != nil {
 		result.ChargeID = refund.Charge.ID
 	}
-	return result, nil
+	return result
 }
 
 func (r RefundRequest) idempotencyKey() string {

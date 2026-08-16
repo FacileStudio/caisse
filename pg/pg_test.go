@@ -130,12 +130,9 @@ func TestStoreReclaimsAStaleClaim(t *testing.T) {
 
 // Stripe can deliver the same event to several replicas at once. Exactly one
 // must win, or the order ships twice.
-func TestStoreLetsOnlyOneConcurrentClaimWin(t *testing.T) {
-	db := database(t)
-	store := pg.New(db, 0)
-	ctx := context.Background()
-
-	const racers = 12
+// claimRace runs racers concurrent Begin calls and returns each racer's result
+// and error, so the test can assert exactly one won.
+func claimRace(ctx context.Context, store *pg.Store, id string, racers int) ([]bool, []error) {
 	results := make([]bool, racers)
 	errs := make([]error, racers)
 
@@ -147,14 +144,21 @@ func TestStoreLetsOnlyOneConcurrentClaimWin(t *testing.T) {
 		go func() {
 			defer done.Done()
 			start.Wait()
-			results[index], errs[index] = store.Begin(ctx, "evt_race")
+			results[index], errs[index] = store.Begin(ctx, id)
 		}()
 	}
 	start.Done()
 	done.Wait()
+	return results, errs
+}
+
+func TestStoreLetsOnlyOneConcurrentClaimWin(t *testing.T) {
+	db := database(t)
+	store := pg.New(db, 0)
+	results, errs := claimRace(context.Background(), store, "evt_race", 12)
 
 	winners := 0
-	for index := range racers {
+	for index := range results {
 		if errs[index] != nil {
 			t.Fatalf("racer %d: %v", index, errs[index])
 		}
@@ -167,18 +171,23 @@ func TestStoreLetsOnlyOneConcurrentClaimWin(t *testing.T) {
 	}
 }
 
+func handleEvent(t *testing.T, store *pg.Store, ctx context.Context, id string) {
+	t.Helper()
+	if _, err := store.Begin(ctx, id); err != nil {
+		t.Fatalf("Begin %s: %v", id, err)
+	}
+	if err := store.Done(ctx, id); err != nil {
+		t.Fatalf("Done %s: %v", id, err)
+	}
+}
+
 func TestPurgeDropsHandledEventsOnly(t *testing.T) {
 	db := database(t)
 	store := pg.New(db, 0)
 	ctx := context.Background()
 
 	for _, id := range []string{"evt_old", "evt_recent"} {
-		if _, err := store.Begin(ctx, id); err != nil {
-			t.Fatalf("Begin %s: %v", id, err)
-		}
-		if err := store.Done(ctx, id); err != nil {
-			t.Fatalf("Done %s: %v", id, err)
-		}
+		handleEvent(t, store, ctx, id)
 	}
 	if _, err := store.Begin(ctx, "evt_pending"); err != nil {
 		t.Fatalf("Begin pending: %v", err)

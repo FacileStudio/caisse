@@ -2,11 +2,9 @@ package caisse
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"time"
 
 	stripe "github.com/stripe/stripe-go/v86"
@@ -134,60 +132,76 @@ func (c *Client) Webhook(hooks Hooks) (http.Handler, error) {
 	}
 
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost {
-			writer.Header().Set("Allow", http.MethodPost)
-			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, MaxWebhookBytes))
-		if err != nil {
-			c.logger.Warn("caisse: unreadable webhook body", "error", err)
-			http.Error(writer, "bad request", http.StatusBadRequest)
-			return
-		}
-
-		event, err := webhook.ConstructEventWithOptions(
-			body,
-			request.Header.Get("Stripe-Signature"),
-			c.webhookSecret,
-			webhook.ConstructEventOptions{Tolerance: c.tolerance, IgnoreAPIVersionMismatch: true},
-		)
-		if err != nil {
-			c.logger.Warn("caisse: rejected webhook signature", "error", err, "remote", request.RemoteAddr)
-			http.Error(writer, "signature verification failed", http.StatusBadRequest)
-			return
-		}
-		c.warnAPIVersion(event.APIVersion)
-
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), c.handlerTimeout)
-		defer cancel()
-
-		fresh, err := hooks.Store.Begin(ctx, event.ID)
-		if err != nil {
-			c.logger.Error("caisse: event store unavailable", "error", err, "event", event.ID)
-			http.Error(writer, "event store unavailable", http.StatusInternalServerError)
-			return
-		}
-		if !fresh {
-			writer.WriteHeader(http.StatusOK)
-			return
-		}
-
-		if err := c.run(ctx, hooks, event); err != nil {
-			c.logger.Error("caisse: webhook handler failed", "error", err, "event", event.ID, "type", event.Type)
-			if releaseErr := hooks.Store.Fail(ctx, event.ID); releaseErr != nil {
-				c.logger.Error("caisse: could not release event claim", "error", releaseErr, "event", event.ID)
-			}
-			http.Error(writer, "handler failed", http.StatusInternalServerError)
-			return
-		}
-
-		if err := hooks.Store.Done(ctx, event.ID); err != nil {
-			c.logger.Error("caisse: handled event but could not record it", "error", err, "event", event.ID)
-		}
-		writer.WriteHeader(http.StatusOK)
+		c.serve(writer, request, hooks)
 	}), nil
+}
+
+// serve handles one delivery: verify, claim, run, acknowledge.
+func (c *Client) serve(writer http.ResponseWriter, request *http.Request, hooks Hooks) {
+	event, ok := c.readEvent(writer, request)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), c.handlerTimeout)
+	defer cancel()
+
+	fresh, err := hooks.Store.Begin(ctx, event.ID)
+	if err != nil {
+		c.logger.Error("caisse: event store unavailable", "error", err, "event", event.ID)
+		http.Error(writer, "event store unavailable", http.StatusInternalServerError)
+		return
+	}
+	if !fresh {
+		writer.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if err := c.run(ctx, hooks, event); err != nil {
+		c.logger.Error("caisse: webhook handler failed", "error", err, "event", event.ID, "type", event.Type)
+		if releaseErr := hooks.Store.Fail(ctx, event.ID); releaseErr != nil {
+			c.logger.Error("caisse: could not release event claim", "error", releaseErr, "event", event.ID)
+		}
+		http.Error(writer, "handler failed", http.StatusInternalServerError)
+		return
+	}
+
+	if err := hooks.Store.Done(ctx, event.ID); err != nil {
+		c.logger.Error("caisse: handled event but could not record it", "error", err, "event", event.ID)
+	}
+	writer.WriteHeader(http.StatusOK)
+}
+
+// readEvent gates the delivery on method and signature. A false result means a
+// response has already been written.
+func (c *Client) readEvent(writer http.ResponseWriter, request *http.Request) (stripe.Event, bool) {
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", http.MethodPost)
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return stripe.Event{}, false
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, MaxWebhookBytes))
+	if err != nil {
+		c.logger.Warn("caisse: unreadable webhook body", "error", err)
+		http.Error(writer, "bad request", http.StatusBadRequest)
+		return stripe.Event{}, false
+	}
+
+	event, err := webhook.ConstructEventWithOptions(
+		body,
+		request.Header.Get("Stripe-Signature"),
+		c.webhookSecret,
+		webhook.ConstructEventOptions{Tolerance: c.tolerance, IgnoreAPIVersionMismatch: true},
+	)
+	if err != nil {
+		c.logger.Warn("caisse: rejected webhook signature", "error", err, "remote", request.RemoteAddr)
+		http.Error(writer, "signature verification failed", http.StatusBadRequest)
+		return stripe.Event{}, false
+	}
+	c.warnAPIVersion(event.APIVersion)
+
+	return event, true
 }
 
 // warnAPIVersion reports, once, that the endpoint's Stripe API version is not
@@ -219,176 +233,4 @@ func (c *Client) run(ctx context.Context, hooks Hooks, event stripe.Event) (err 
 		}
 	}()
 	return c.dispatch(ctx, hooks, event)
-}
-
-func (c *Client) dispatch(ctx context.Context, hooks Hooks, event stripe.Event) error {
-	switch event.Type {
-	case stripe.EventTypeCheckoutSessionCompleted, stripe.EventTypeCheckoutSessionAsyncPaymentSucceeded:
-		session, err := decode[stripe.CheckoutSession](event)
-		if err != nil {
-			return err
-		}
-		if session.PaymentStatus == stripe.CheckoutSessionPaymentStatusUnpaid {
-			return nil
-		}
-		return call(ctx, hooks.OnPaid, paymentFromSession(event, session))
-
-	case stripe.EventTypeCheckoutSessionAsyncPaymentFailed:
-		session, err := decode[stripe.CheckoutSession](event)
-		if err != nil {
-			return err
-		}
-		return call(ctx, hooks.OnFailed, paymentFromSession(event, session))
-
-	case stripe.EventTypeCheckoutSessionExpired:
-		session, err := decode[stripe.CheckoutSession](event)
-		if err != nil {
-			return err
-		}
-		return call(ctx, hooks.OnExpired, paymentFromSession(event, session))
-
-	case stripe.EventTypePaymentIntentPaymentFailed:
-		intent, err := decode[stripe.PaymentIntent](event)
-		if err != nil {
-			return err
-		}
-		return call(ctx, hooks.OnFailed, paymentFromIntent(event, intent))
-
-	case stripe.EventTypeChargeRefunded:
-		charge, err := decode[stripe.Charge](event)
-		if err != nil {
-			return err
-		}
-		return call(ctx, hooks.OnRefunded, refundFromCharge(event, charge))
-
-	case stripe.EventTypeCustomerSubscriptionCreated,
-		stripe.EventTypeCustomerSubscriptionUpdated,
-		stripe.EventTypeCustomerSubscriptionDeleted,
-		stripe.EventTypeCustomerSubscriptionPaused,
-		stripe.EventTypeCustomerSubscriptionResumed:
-		subscription, err := decode[stripe.Subscription](event)
-		if err != nil {
-			return err
-		}
-		return call(ctx, hooks.OnSubscription, subscriptionFrom(event, subscription))
-	}
-
-	return nil
-}
-
-func decode[T any](event stripe.Event) (*T, error) {
-	if event.Data == nil {
-		return nil, fmt.Errorf("caisse: event %s has no data", event.ID)
-	}
-	var decoded T
-	if err := json.Unmarshal(event.Data.Raw, &decoded); err != nil {
-		return nil, fmt.Errorf("caisse: event %s: %w", event.ID, err)
-	}
-	return &decoded, nil
-}
-
-func call[T any](ctx context.Context, handler func(context.Context, T) error, payload T) error {
-	if handler == nil {
-		return nil
-	}
-	return handler(ctx, payload)
-}
-
-func paymentFromSession(event stripe.Event, session *stripe.CheckoutSession) Payment {
-	payment := Payment{
-		EventID:    event.ID,
-		Reference:  reference(session.ClientReferenceID, session.Metadata),
-		SessionID:  session.ID,
-		Amount:     session.AmountTotal,
-		Currency:   string(session.Currency),
-		Metadata:   session.Metadata,
-		Livemode:   event.Livemode,
-		OccurredAt: time.Unix(event.Created, 0).UTC(),
-	}
-	if session.PaymentIntent != nil {
-		payment.PaymentIntentID = session.PaymentIntent.ID
-	}
-	if session.Subscription != nil {
-		payment.SubscriptionID = session.Subscription.ID
-	}
-	if session.Customer != nil {
-		payment.CustomerID = session.Customer.ID
-	}
-	payment.CustomerEmail = session.CustomerEmail
-	if payment.CustomerEmail == "" && session.CustomerDetails != nil {
-		payment.CustomerEmail = session.CustomerDetails.Email
-	}
-	return payment
-}
-
-func paymentFromIntent(event stripe.Event, intent *stripe.PaymentIntent) Payment {
-	payment := Payment{
-		EventID:         event.ID,
-		Reference:       reference("", intent.Metadata),
-		PaymentIntentID: intent.ID,
-		Amount:          intent.Amount,
-		Currency:        string(intent.Currency),
-		CustomerEmail:   intent.ReceiptEmail,
-		Metadata:        intent.Metadata,
-		Livemode:        event.Livemode,
-		OccurredAt:      time.Unix(event.Created, 0).UTC(),
-	}
-	if intent.Customer != nil {
-		payment.CustomerID = intent.Customer.ID
-	}
-	if intent.LastPaymentError != nil {
-		payment.FailureMessage = intent.LastPaymentError.Msg
-	}
-	return payment
-}
-
-func refundFromCharge(event stripe.Event, charge *stripe.Charge) Refund {
-	refund := Refund{
-		EventID:    event.ID,
-		ChargeID:   charge.ID,
-		Reference:  reference("", charge.Metadata),
-		Amount:     charge.AmountRefunded,
-		Currency:   string(charge.Currency),
-		Status:     string(charge.Status),
-		Metadata:   charge.Metadata,
-		Livemode:   event.Livemode,
-		OccurredAt: time.Unix(event.Created, 0).UTC(),
-	}
-	if charge.PaymentIntent != nil {
-		refund.PaymentIntentID = charge.PaymentIntent.ID
-	}
-	return refund
-}
-
-func subscriptionFrom(event stripe.Event, subscription *stripe.Subscription) Subscription {
-	result := Subscription{
-		EventID:           event.ID,
-		ID:                subscription.ID,
-		Reference:         reference("", subscription.Metadata),
-		Status:            string(subscription.Status),
-		CancelAtPeriodEnd: subscription.CancelAtPeriodEnd,
-		Metadata:          subscription.Metadata,
-		Livemode:          event.Livemode,
-		OccurredAt:        time.Unix(event.Created, 0).UTC(),
-	}
-	if subscription.Customer != nil {
-		result.CustomerID = subscription.Customer.ID
-	}
-	return result
-}
-
-func reference(clientReferenceID string, metadata map[string]string) string {
-	if clientReferenceID != "" {
-		return clientReferenceID
-	}
-	return metadata[ReferenceKey]
-}
-
-// Sign produces the Stripe-Signature header for a payload, so a test can drive
-// a webhook handler without Stripe and without the Stripe CLI.
-//
-// It is the only reason a test needs to know how Stripe signs anything.
-func Sign(secret string, payload []byte, at time.Time) string {
-	signature := webhook.ComputeSignature(at, payload, secret)
-	return "t=" + strconv.FormatInt(at.Unix(), 10) + ",v1=" + fmt.Sprintf("%x", signature)
 }

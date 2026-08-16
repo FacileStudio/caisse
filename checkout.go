@@ -5,13 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
-	"maps"
-	"net/url"
 	"strings"
 	"time"
 
-	"github.com/FacileStudio/tronc/errors"
 	stripe "github.com/stripe/stripe-go/v86"
 )
 
@@ -125,70 +121,9 @@ func (c *Client) Checkout(ctx context.Context, request CheckoutRequest) (Session
 		return Session{}, err
 	}
 
-	mode := request.Mode
-	if mode == "" {
-		mode = ModePayment
-	}
-
-	metadata := map[string]string{ReferenceKey: request.Reference}
-	maps.Copy(metadata, request.Metadata)
-
-	params := &stripe.CheckoutSessionCreateParams{
-		ClientReferenceID: stripe.String(request.Reference),
-		Mode:              stripe.String(string(mode)),
-		SuccessURL:        stripe.String(request.SuccessURL),
-		CancelURL:         stripe.String(request.CancelURL),
-		LineItems:         make([]*stripe.CheckoutSessionCreateLineItemParams, 0, len(request.Lines)),
-		Metadata:          metadata,
-	}
+	params := buildParams(request)
 	params.Context = ctx
 	params.IdempotencyKey = stripe.String(request.idempotencyKey())
-
-	if request.CustomerID != "" {
-		params.Customer = stripe.String(request.CustomerID)
-	} else if request.CustomerEmail != "" {
-		params.CustomerEmail = stripe.String(request.CustomerEmail)
-	}
-	if request.Locale != "" {
-		params.Locale = stripe.String(request.Locale)
-	}
-
-	switch mode {
-	case ModeSubscription:
-		params.SubscriptionData = &stripe.CheckoutSessionCreateSubscriptionDataParams{Metadata: metadata}
-	default:
-		params.PaymentIntentData = &stripe.CheckoutSessionCreatePaymentIntentDataParams{Metadata: metadata}
-	}
-
-	currency := strings.ToLower(request.Currency)
-	for _, line := range request.Lines {
-		quantity := line.Quantity
-		if quantity == 0 {
-			quantity = 1
-		}
-		item := &stripe.CheckoutSessionCreateLineItemParams{Quantity: stripe.Int64(quantity)}
-
-		if line.adHoc() {
-			product := &stripe.CheckoutSessionCreateLineItemPriceDataProductDataParams{
-				Name: stripe.String(line.Label),
-			}
-			if line.Description != "" {
-				product.Description = stripe.String(line.Description)
-			}
-			if line.ImageURL != "" {
-				product.Images = []*string{stripe.String(line.ImageURL)}
-			}
-			item.PriceData = &stripe.CheckoutSessionCreateLineItemPriceDataParams{
-				Currency:    stripe.String(currency),
-				UnitAmount:  stripe.Int64(line.Amount),
-				ProductData: product,
-			}
-		} else {
-			item.Price = stripe.String(line.PriceID)
-		}
-
-		params.LineItems = append(params.LineItems, item)
-	}
 
 	session, err := c.api.V1CheckoutSessions.Create(ctx, params)
 	if err != nil {
@@ -230,96 +165,4 @@ func (r CheckoutRequest) idempotencyKey() string {
 	}
 	sum := sha256.Sum256(encoded)
 	return "caisse_" + hex.EncodeToString(sum[:])[:32]
-}
-
-func (r CheckoutRequest) validate() error {
-	switch {
-	case strings.TrimSpace(r.Reference) == "":
-		return errors.Invalid("caisse: Reference is required")
-	case len(r.Reference) > maxReference:
-		return errors.Invalid(fmt.Sprintf("caisse: Reference is longer than %d characters", maxReference))
-	case len(r.Lines) == 0:
-		return errors.Invalid("caisse: at least one line is required")
-	case len(r.Lines) > maxLines:
-		return errors.Invalid(fmt.Sprintf("caisse: more than %d lines", maxLines))
-	case r.CustomerID != "" && r.CustomerEmail != "":
-		return errors.Invalid("caisse: set CustomerID or CustomerEmail, not both")
-	}
-
-	if err := validateRedirect("SuccessURL", r.SuccessURL); err != nil {
-		return err
-	}
-	if err := validateRedirect("CancelURL", r.CancelURL); err != nil {
-		return err
-	}
-
-	mode := r.Mode
-	if mode == "" {
-		mode = ModePayment
-	}
-	if mode != ModePayment && mode != ModeSubscription {
-		return errors.Invalid(fmt.Sprintf("caisse: unknown mode %q", string(r.Mode)))
-	}
-
-	adHoc := false
-	for index, line := range r.Lines {
-		where := fmt.Sprintf("caisse: line %d", index)
-		switch {
-		case line.PriceID != "" && (line.Label != "" || line.Amount != 0):
-			return errors.Invalid(where + " sets both PriceID and an ad-hoc price")
-		case line.Quantity < 0:
-			return errors.Invalid(where + " has a negative quantity")
-		}
-		if line.adHoc() {
-			adHoc = true
-			switch {
-			case mode == ModeSubscription:
-				return errors.Invalid(where + " has no PriceID, which subscription mode requires")
-			case strings.TrimSpace(line.Label) == "":
-				return errors.Invalid(where + " has no Label")
-			case line.Amount <= 0:
-				return errors.Invalid(where + " has a zero or negative Amount")
-			}
-		}
-	}
-
-	if adHoc && len(strings.TrimSpace(r.Currency)) != 3 {
-		return errors.Invalid("caisse: Currency must be a three-letter ISO 4217 code")
-	}
-
-	return validateMetadata(r.Metadata)
-}
-
-// validateRedirect refuses anything that is not an absolute http(s) URL. A
-// relative or scheme-less redirect is a configuration mistake that only shows
-// up once a customer has already paid.
-func validateRedirect(field, raw string) error {
-	if strings.TrimSpace(raw) == "" {
-		return errors.Invalid("caisse: " + field + " is required")
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return errors.Invalid("caisse: " + field + " is not a valid URL")
-	}
-	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return errors.Invalid("caisse: " + field + " must be an absolute http or https URL")
-	}
-	return nil
-}
-
-func validateMetadata(metadata map[string]string) error {
-	if len(metadata) > maxMetadataEntries {
-		return errors.Invalid(fmt.Sprintf("caisse: more than %d metadata entries", maxMetadataEntries))
-	}
-	for key, value := range metadata {
-		switch {
-		case key == ReferenceKey:
-			return errors.Invalid("caisse: metadata key " + ReferenceKey + " is reserved")
-		case len(key) > maxMetadataKey:
-			return errors.Invalid(fmt.Sprintf("caisse: metadata key %q is longer than %d characters", key, maxMetadataKey))
-		case len(value) > maxMetadataValue:
-			return errors.Invalid(fmt.Sprintf("caisse: metadata value for %q is longer than %d characters", key, maxMetadataValue))
-		}
-	}
-	return nil
 }
