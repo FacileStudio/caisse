@@ -4,6 +4,37 @@ All notable changes to `caisse` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow semver —
 while on `v0`, a breaking change bumps the minor.
 
+## [Unreleased]
+
+### Changed
+
+- **The `tronc` floor moves from v0.9.0 to v0.10.1**, the release that stopped believing
+  `X-Forwarded-For` from an untrusted peer — until v0.10.0 the chassis installed chi's
+  `RealIP`, which rewrote `RemoteAddr` from the header with no check on who sent it, so every
+  per-IP rate limit in every app on it was bypassable by rotating one header. Nothing in caisse
+  behaves differently, because the only tronc package this imports is `tronc/errors` and the
+  defect was in the HTTP chassis caisse does not use. What moves is the floor a consumer
+  resolves, which is the point: an app that takes caisse can no longer end up pinned below the
+  version that closed it.
+
+- **The package was split up, and nothing about it changed.** `validate.go`,
+  `checkout_params.go`, `dispatch.go`, `map.go` and `sign.go` now hold what `checkout.go` and
+  `webhook.go` used to, and the `Webhook` handler is `serve` plus `readEvent` rather than one
+  closure. The exported API is byte-identical to v0.1.1 — `go doc -all` for both `caisse` and
+  `caisse/pg` produces the same output down to the doc comments — and so is the behaviour: the
+  unpaid-session skip still applies to `checkout.session.completed` and
+  `checkout.session.async_payment_succeeded` and to nothing else, and the checkout validations
+  still run in the order that decides which error a bad request gets first. Stated plainly
+  because a diff that moves nine hundred lines is one nobody reads, and this is the one release
+  where not reading it is the right call.
+
+### Added
+
+- `filet.yml` and a `filet` CI workflow, which is the suite's style gate rather than anything
+  the package does. It carries one deliberate exemption: `structFields: 13`, because `Payment`
+  mirrors Stripe's wire shape and splitting it to satisfy a limit would break the public API to
+  please a linter.
+
 ## [0.1.1] — 2026-08-07
 
 ### Fixed
