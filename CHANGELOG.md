@@ -28,13 +28,6 @@ while on `v0`, a breaking change bumps the minor.
   because a diff that moves nine hundred lines is one nobody reads, and this is the one release
   where not reading it is the right call.
 
-### Added
-
-- `filet.yml` and a `filet` CI workflow, which is the suite's style gate rather than anything
-  the package does. It carries one deliberate exemption: `structFields: 13`, because `Payment`
-  mirrors Stripe's wire shape and splitting it to satisfy a limit would break the public API to
-  please a linter.
-
 ## [0.1.1] — 2026-08-07
 
 ### Fixed
