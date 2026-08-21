@@ -6,6 +6,10 @@ while on `v0`, a breaking change bumps the minor.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.2] — 2026-08-22
+
 ### Changed
 
 - **The `tronc` floor moves from v0.9.0 to v0.10.1**, the release that stopped believing
