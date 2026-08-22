@@ -15,11 +15,13 @@ versioned.
 ```sh
 git clone https://github.com/FacileStudio/caisse
 cd caisse
-mise run hooks
+mise install
 go test ./...
 ```
 
-`mise run hooks` points `core.hooksPath` at `.githooks`, which runs the gate before every push.
+`mise install` installs the toolchain and wires the git hooks. lefthook then runs the shared
+conventional-commit check on every commit and this repo's gate before every push. The shared
+half comes from `FacileStudio/hooks`, pinned by tag in `lefthook.yml`.
 
 ## The quality gate
 
