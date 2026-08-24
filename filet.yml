@@ -1,4 +1,7 @@
 # caisse: shared Stripe adapter for the Facile Suite.
+
+kind: lib
+
 ignore: [.git, node_modules, vendor, dist, build, target, testdata, .output, _app, coverage]
 extensions: [.go]
 
