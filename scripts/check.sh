@@ -73,7 +73,9 @@ if [ "$mode" = "all" ]; then
   # PATH and resolves, but every invocation of it fails. Probe that the binary
   # actually runs, so an unusable tool skips the pass instead of failing it.
   if golangci-lint version >/dev/null 2>&1; then
-    golangci-lint run ./... || status=1
+    # $GOROOT/bin first, because golangci-lint shells out to `go` and the two
+    # have to come from the same install.
+    PATH="${GOROOT:+$GOROOT/bin:}$PATH" golangci-lint run ./... || status=1
   else
     echo "check: no usable 'golangci-lint', skipping the lint pass (CI still runs it)" >&2
   fi
