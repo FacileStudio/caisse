@@ -6,7 +6,9 @@ while on `v0`, a breaking change bumps the minor.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- Licence: caisse is now licensed under `MIT` (see `LICENSE`); before this, the repository carried no licence.
 
 ## [0.1.2] — 2026-08-22
 

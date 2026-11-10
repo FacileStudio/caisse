@@ -107,3 +107,7 @@ Release history lives in [CHANGELOG.md](CHANGELOG.md).
 
 Part of the [Facile Suite](https://facile.studio) — self-hosted tools for creative studios
 and freelancers. One login, zero cloud dependency.
+
+## License
+
+caisse is licensed under the [MIT License](LICENSE).
