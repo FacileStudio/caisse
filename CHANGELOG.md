@@ -6,6 +6,13 @@ while on `v0`, a breaking change bumps the minor.
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-11-11
+
+### Security
+
+- build: Go 1.26.11 (`go` directive, CI pin, mise pin and lock). It fixes GO-2026-6848 to GO-2026-6859 in the standard library and toolchain, which douane reported as unscored gaps and which failed the gate.
+- build(deps): `jackc/pgx/v5` v5.8.0 to v5.9.2 (CVE-2026-33815, CVE-2026-33816, both critical) and `golang.org/x/text` v0.29.0 to v0.41.0 (GO-2026-5970, GO-2026-6629).
+
 ### Changed
 
 - Licence: caisse is now licensed under `MIT` (see `LICENSE`); before this, the repository carried no licence.
